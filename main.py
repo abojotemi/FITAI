@@ -1,20 +1,26 @@
+from typing import Any
 import streamlit as st
 import plotly.express as px
 from datetime import datetime
 import pandas as pd
 import pycountry
 import base64
-from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, ValidationError
 from dataclasses import dataclass
 import logging
 import json
+from progress_journal import initialize_progress_journal
 from workout import predict_image
 from llm import LLMHandler
 from gtts import gTTS
 import re
 import io
 import assemblyai as aai
+import os
+from dotenv import load_dotenv
+from supabase_handler import SupabaseHandler, AuthUI
+
+load_dotenv()
 
 
 
@@ -26,6 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AppConfig:
     VALID_IMAGE_TYPES: tuple = ("png", "jpg", "jpeg", "gif")
+    VALID_AUDIO_TYPES: tuple = ('mp3', 'wav', 'm4a')
     MAX_IMAGE_SIZE: int = 10 * 1024 * 1024  # 10MB
     DEFAULT_WEIGHT: float = 30.0
     DEFAULT_HEIGHT: float = 120.0
@@ -131,6 +138,8 @@ class FitAI:
     """Main application class"""
     def __init__(self):
         self.config = AppConfig()
+        self.supabase = SupabaseHandler()
+        self.auth_ui = AuthUI(self.supabase)
         SessionState.init_session_state()
         SessionState.load_progress_data()
         self.ui = UIComponents()
@@ -151,11 +160,12 @@ class FitAI:
 
     def speech_to_text(self, audio_file):
 
-        aai.settings.api_key = "4a69706fc1a348c3a830d2199942e953"
+        aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
         transcriber = aai.Transcriber()
 
         transcript = transcriber.transcribe(audio_file)
         return transcript.text
+    
     def text_to_speech(self,text):
         """Convert text to speech and return the audio player HTML"""
         # Create gTTS object
@@ -183,34 +193,44 @@ class FitAI:
     def run(self):
         """Main application entry point"""
         self.ui.setup_page()
-        st.title("🏋️‍♂️ Fit AI - Your Personal Fitness Coach")
         
-        # Create tabs
-        tabs = st.tabs(["Profile", "Generate Workout routine", "Equipment Based Workout", "Questions","Progress", "Analytics"])
-        
-        # Render appropriate tab content
-        with tabs[0]:
-            self.render_profile_tab()
+        # Render authentication UI
+        self.auth_ui.render_auth_ui()
+        if st.session_state.get('authenticated'):
+            st.title("🏋️‍♂️ Fit AI - Your Personal Fitness Coach")
             
-        if st.session_state.profile_completed:
-            with tabs[1]:
-                self.render_workout_tab()
-            with tabs[2]:
-                self.render_equipment_tab()
-            with tabs[3]:
-                self.render_questions_tab()
-            with tabs[4]:
-                self.render_progress_tab()
-            with tabs[5]:
-                self.render_analytics_tab()
-        else:
-            for tab in tabs[1:]:
-                with tab:
-                    st.info("Please complete your profile first.")
+            # Create tabs
+            tabs = st.tabs(["Profile", "Generate Workout routine", "Equipment Based Workout", "Questions", "Progress Journal", "Analytics"])
+            
+            # Render appropriate tab content
+            with tabs[0]:
+                self.render_profile_tab()
+                
+            if st.session_state.profile_completed:
+                with tabs[1]:
+                    self.render_workout_tab()
+                with tabs[2]:
+                    self.render_equipment_tab()
+                with tabs[3]:
+                    self.render_questions_tab()
+                with tabs[4]:
+                    self.render_progress_journal_tab()
+                with tabs[5]:
+                    self.render_analytics_tab()
+            else:
+                for tab in tabs[1:]:
+                    with tab:
+                        st.info("Please complete your profile first.")
 
     def render_profile_tab(self):
         """Render profile tab content"""
         st.header("Your Profile")
+        
+        if not st.session_state.get('user_info'):
+            profile_result = self.supabase.get_user_profile(st.session_state.user_id)
+            if profile_result["success"] and profile_result["data"]:
+                st.session_state.user_info = UserInfo(**profile_result["data"])
+                st.session_state.profile_completed = True
         
         try:
             with st.form("profile_form"):
@@ -271,10 +291,17 @@ class FitAI:
                             goals=goals,
                             country=country
                         )
-                        st.session_state.user_info = info
-                        st.session_state.profile_completed = True
-                        st.success("Profile saved successfully! 🎉")
-                        st.balloons()
+                        save_result = self.supabase.save_user_profile(
+                            st.session_state.user_id,
+                            info.model_dump()
+                        )
+                        if save_result["success"]:
+                            st.session_state.user_info = info
+                            st.session_state.profile_completed = True
+                            st.success("Profile saved successfully! 🎉")
+                            st.balloons()
+                        else:
+                            st.error(f"Error saving profile: {save_result['error']}")
                     except ValidationError as e:
                         st.error(f"Please check your inputs: {str(e)}")
                     except Exception as e:
@@ -320,100 +347,70 @@ class FitAI:
                 
                 if st.button("Analyze Equipment"):
                     
-                    with st.spinner("Analyzing your equipment..."):
-                        equipment = predict_image(img)  
-                        if equipment:
-                            st.success("Equipment analyzed successfully!")
-                            st.write("Detected equipment:", equipment)
+                    equipment = predict_image(img)  
+                    if equipment:
+                        st.write("Detected equipment:", equipment)
+                        
+                        with st.spinner("Generating your personalized workout plan..."):
+                            llm_handler = LLMHandler()
+                            workout_plan = llm_handler.workout_planner(  # Assuming this function is imported
+                                equipment,
+                                st.session_state.user_info
+                            )
                             
-                            with st.spinner("Generating your personalized workout plan..."):
-                                llm_handler = LLMHandler()
-                                workout_plan = llm_handler.workout_planner(  # Assuming this function is imported
-                                    equipment,
-                                    st.session_state.user_info
-                                )
+                            if workout_plan:
+                                st.markdown("### 📋 Your Personalized Workout Plan")
+                                st.markdown(workout_plan)
                                 
-                                if workout_plan:
-                                    st.markdown("### 📋 Your Personalized Workout Plan")
-                                    st.markdown(workout_plan)
-                                    
-                                    # Save workout to history
-                                    st.session_state.workout_history.append({
-                                        "date": datetime.now().strftime("%Y-%m-%d"),
-                                        "equipment": equipment,
-                                        "plan": workout_plan
-                                    })
-                                else:
-                                    st.error("Unable to generate workout plan. Please try again.")
-                        else:
-                            st.error("Unable to analyze equipment. Please try a different image.")
-                            
+                                # Save workout to history
+                                st.session_state.workout_history.append({
+                                    "date": datetime.now().strftime("%Y-%m-%d"),
+                                    "equipment": equipment,
+                                    "plan": workout_plan
+                                })
+                            else:
+                                st.error("Unable to generate workout plan. Please try again.")
+                    else:
+                        st.error("Unable to analyze equipment. Please try a different image.")
+                        
             except Exception as e:
                 logger.error(f"Error in workout tab: {e}")
                 st.error("An error occurred while processing your workout. Please try again.")
     def render_questions_tab(self):
+        """Render questions tab with audio transcription and LLM answers"""
         st.header("Ask your questions here")
         
         try:
-            audio_file = st.file_uploader("Upload your questions here (Audio file)")
+            audio_file = st.file_uploader("Upload your questions here (Audio file)", type=self.config.VALID_AUDIO_TYPES)
             
             if audio_file:
-                
                 st.audio(audio_file)
-                with st.spinner("Transcribing your questions..."):
-                    audio_text = self.speech_to_text(audio_file)
-                audio_text = st.text_area("Confirm your speech",value=audio_text,height=200)
-                st.write(audio_text)
+                
+                # First step: Transcribe audio
+                if st.button("Generate transcript"):
+                    with st.spinner("Transcribing your questions..."):
+                        audio_text = self.speech_to_text(audio_file)
+                        # Store transcribed text in session state
+                        st.session_state.audio_text = audio_text
+                
+                # Show text area if we have transcribed text
+                if 'audio_text' in st.session_state:
+                    audio_text = st.text_area(
+                        "Edit your question",
+                        value=st.session_state.audio_text,
+                        height=200
+                    )
+                    
+                    # Second step: Generate answer
+                    if st.button("Answer question"):
+                        llm = LLMHandler()
+                        with st.spinner("Answering the question..."):
+                            response = llm.answer_question(audio_text, st.session_state.user_info)
+                            st.markdown(response)
+                            
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-    def render_progress_tab(self):
-        """Render progress tracking tab content"""
-        st.header("Track Your Progress")
-        
-        try:
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                new_weight = st.number_input(
-                    "Today's Weight (kg)",
-                    min_value=30.0,
-                    value=st.session_state.user_info.weight,
-                    help="Enter your current weight"
-                )
-                
-            with col2:
-                mood = st.select_slider(
-                    "Energy Level",
-                    options=["Low", "Medium", "High"],
-                    value="Medium"
-                )
-                
-            with col3:
-                workout_intensity = st.select_slider(
-                    "Workout Intensity",
-                    options=["Light", "Moderate", "Intense"],
-                    value="Moderate"
-                )
-            
-            notes = st.text_area("Additional Notes", help="Any comments about today's progress?")
-            
-            if st.button("Log Progress"):
-                progress_entry = {
-                    "date": datetime.now().strftime("%Y-%m-%d"),
-                    "weight": new_weight,
-                    "mood": mood,
-                    "intensity": workout_intensity,
-                    "notes": notes
-                }
-                
-                st.session_state.progress_data.append(progress_entry)
-                SessionState.save_progress_data()
-                st.success("Progress logged successfully! 🎯")
-                st.balloons()
-        
-        except Exception as e:
-            logger.error(f"Error in progress tab: {e}")
-            st.error("An error occurred while logging progress. Please try again.")
+            logger.error(f"Error in questions tab: {str(e)}")
+            st.error("An error occurred while processing your question. Please try again.")
 
     
     def render_analytics_tab(self):
@@ -473,7 +470,32 @@ class FitAI:
         except Exception as e:
             logger.error(f"Error in analytics tab: {e}")
             st.error("An error occurred while loading analytics. Please try again.")
-
+    def render_progress_journal_tab(self):
+        """Render progress journal tab"""
+        st.header("Progress Journal 📔")
+        
+        if not st.session_state.get('progress_journal_ui'):
+            progress_result = self.supabase.get_progress_data(st.session_state.user_id)
+            if progress_result["success"]:
+                st.session_state.progress_data = progress_result["data"]
+            st.session_state.progress_journal_ui = initialize_progress_journal(self.supabase)
+        
+        # Create tabs for adding entries and viewing history
+        journal_tabs = st.tabs(["Add Entry", "View Progress"])
+        
+        with journal_tabs[0]:
+            st.session_state.progress_journal_ui.render_entry_form()
+            if st.session_state.get('new_entry'):
+                save_result = self.supabase.save_progress_data(
+                    st.session_state.user_id,
+                    st.session_state.new_entry
+                )
+                if save_result["success"]:
+                    st.success("Progress saved successfully!")
+                else:
+                    st.error(f"Error saving progress: {save_result['error']}")
+        with journal_tabs[1]:
+            st.session_state.progress_journal_ui.render_progress_view()
 if __name__ == "__main__":
     try:
         app = FitAI()

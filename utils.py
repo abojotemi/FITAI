@@ -1,11 +1,10 @@
 # utils.py
 import io
 from PIL import Image
-from typing import Union, Optional
 import streamlit as st
 from config import config
 
-def validate_image(image_file: Union[str, bytes, io.BytesIO]) -> bool:
+def validate_image(image_file: str | bytes | io.BytesIO) -> bool:
     """Validate uploaded image file."""
     try:
         with Image.open(image_file) as img:

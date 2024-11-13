@@ -92,6 +92,7 @@ def predict_image(uploaded_file):
                         caption = result[0].get("generated_text", "No caption generated.")
                     else:
                         caption = result.get("generated_text", "No caption generated.")
+                    st.success("Equipment analyzed successfully!")
                     st.success(f"**Caption**: {caption}")
                     return caption
                     

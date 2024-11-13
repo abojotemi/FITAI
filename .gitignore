@@ -1,6 +1,6 @@
 docs/
 .venv/
 .env
-.langchain.db
+*.db
 __pycache__/
 chroma_langchain_db/

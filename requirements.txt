@@ -1,7 +1,7 @@
 assemblyai
 google-ai-generativelanguage
 google-generativeai
-gTTS
+gtts
 huggingface-hub
 langchain
 langchain-community
@@ -12,6 +12,7 @@ opencv-python
 pandas
 pillow
 plotly
+pycountry
 pydantic
 python-dotenv
 requests
@@ -19,4 +20,6 @@ requests-oauthlib
 requests-toolbelt
 SpeechRecognition
 streamlit
+supabase
+
 
