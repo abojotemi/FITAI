@@ -448,7 +448,7 @@ class FitAI:
                     st.subheader("Workout Intensity Distribution")
                     fig_intensity = px.pie(
                         df,
-                        names="intensity",
+                        names="workout_intensity",
                         title="Workout Intensities"
                     )
                     st.plotly_chart(fig_intensity, use_container_width=True)
